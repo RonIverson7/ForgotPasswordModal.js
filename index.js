@@ -5,9 +5,9 @@ import { Link, useRouter } from "expo-router";
 import { supabase } from "../supabase/supabaseClient";
 import { useUser } from "./contexts/UserContext";
 import "react-native-url-polyfill/auto";
-import * as WebBrowser from "expo-web-browser";
-import * as Google from "expo-auth-session/providers/google";
 import ForgotPasswordModal from "./components/ForgotPasswordModal";
+import * as WebBrowser from "expo-web-browser";
+import * as Linking from "expo-linking";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -19,12 +19,6 @@ const LoginScreen = () => {
   const [message, setMessage] = useState("");
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const { refreshUserData } = useUser();
-
-  const [request, , promptAsync] = Google.useIdTokenAuthRequest({
-    clientId:
-      "689949119778-7hpessicoana4ep5pmis709r6j53ndhk.apps.googleusercontent.com",
-    scopes: ["openid", "email", "profile"],
-  });
 
   const router = useRouter();
   const commonInputContainerStyle = { borderBottomWidth: 0, height: 30 };
@@ -64,74 +58,74 @@ const LoginScreen = () => {
   // Google OAuth Login
   const handleGoogleLogin = async () => {
     try {
-      if (!request) {
-        setMessage("Google login is not ready yet. Please try again in a moment.");
+      const redirectUrl = Linking.createURL("/auth/callback", {
+        scheme: "capstonereact",
+      });
+
+      console.log('[OAuth] Starting Google login with redirect:', redirectUrl);
+
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: redirectUrl,
+          queryParams: { prompt: "select_account" },
+        },
+      });
+
+      if (error) {
+        console.error('[OAuth] Supabase OAuth error:', error.message);
+        setMessage(error.message);
         return;
       }
 
-      console.log("[OAuth] Starting Google login with AuthSession...");
-
-      const result = await promptAsync({ useProxy: true });
-
-      if (result.type === "success") {
-        const idToken = result.params?.id_token;
-
-        if (!idToken) {
-          console.error("[OAuth] No ID token returned from Google");
-          setMessage("Login failed: No ID token returned from Google.");
-          return;
-        }
-
-        console.log(
-          "[OAuth] Google sign-in successful, signing into Supabase with ID token..."
+      if (data?.url) {
+        console.log('[OAuth] Opening auth session...');
+        const result = await WebBrowser.openAuthSessionAsync(
+          data.url,
+          redirectUrl
         );
 
-        const { data, error } = await supabase.auth.signInWithIdToken({
-          provider: "google",
-          token: idToken,
-        });
+        if (result.type === "success" && result.url) {
+          console.log('[OAuth] Auth session successful, exchanging code...');
+          const { data: sessionData, error: sessionError } =
+            await supabase.auth.exchangeCodeForSession(result.url);
 
-        if (error) {
-          console.error(
-            "[OAuth] Supabase signInWithIdToken error:",
-            error.message
-          );
-          setMessage(error.message);
-          return;
-        }
-
-        if (data?.session) {
-          console.log("[OAuth] Supabase session created successfully!");
-
-          // Try to fetch user data from backend (graceful failure)
-          try {
-            console.log("[OAuth] Fetching user data from backend...");
-            await refreshUserData();
-            console.log("[OAuth] User data fetched successfully");
-          } catch (backendError) {
-            console.warn(
-              "[OAuth] Backend connection failed (non-critical):",
-              backendError.message
-            );
-            // Continue anyway - user is authenticated via Supabase
-            Alert.alert(
-              "Note",
-              "Logged in! Backend server connection failed - some features may be limited until server is running."
-            );
+          if (sessionError) {
+            console.error('[OAuth] Session exchange error:', sessionError.message);
+            setMessage(sessionError.message);
+            return;
           }
 
-          // Navigate to home regardless of backend status
-          console.log("[OAuth] Navigating to home...");
-          router.replace("/home");
+          if (sessionData?.session) {
+            console.log('[OAuth] Session created successfully!');
+            
+            // Try to fetch user data from backend (graceful failure)
+            try {
+              console.log('[OAuth] Fetching user data from backend...');
+              await refreshUserData();
+              console.log('[OAuth] User data fetched successfully');
+            } catch (backendError) {
+              console.warn('[OAuth] Backend connection failed (non-critical):', backendError.message);
+              // Continue anyway - user is authenticated via Supabase
+              Alert.alert(
+                'Note', 
+                'Logged in! Backend server connection failed - some features may be limited until server is running.'
+              );
+            }
+            
+            // Navigate to home regardless of backend status
+            console.log('[OAuth] Navigating to home...');
+            router.replace("/home");
+          }
+        } else if (result.type === "cancel") {
+          console.log('[OAuth] User cancelled login');
+          setMessage("Login cancelled");
+        } else {
+          console.log('[OAuth] Auth session result:', result.type);
         }
-      } else if (result.type === "cancel") {
-        console.log("[OAuth] User cancelled login");
-        setMessage("Login cancelled");
-      } else {
-        console.log("[OAuth] Auth session result:", result.type);
       }
     } catch (err) {
-      console.error("[OAuth] Unexpected error:", err);
+      console.error('[OAuth] Unexpected error:', err);
       setMessage("Login failed: " + (err.message || "Something went wrong"));
     }
   };
@@ -252,11 +246,12 @@ const LoginScreen = () => {
             </View>
           </View>
         </ScrollView>
-        <ForgotPasswordModal
-          isOpen={showForgotPassword}
-          onClose={() => setShowForgotPassword(false)}
-        />
       </KeyboardAvoidingView>
+
+      <ForgotPasswordModal
+        isOpen={showForgotPassword}
+        onClose={() => setShowForgotPassword(false)}
+      />
     </SafeAreaView>
   );
 };
